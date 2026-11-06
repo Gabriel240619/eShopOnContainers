@@ -1,4 +1,6 @@
 using Catalog.API.Data;
+using Catalog.API.Integration;
+using Catalog.API.Integration.ItemEvents;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.OpenApi;
 using System.Reflection;
@@ -11,33 +13,38 @@ builder.Services.AddControllers();
 
 // Add service for managing a sqlserver database that will be managed using ApplicationDBContext
 // the connection to the database was defined in appsettings
-//builder.Services.AddDbContext<CatalogContext>(opt => opt.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+//builder.Services.AddDbContext<CatalogContext>(opt =>
+//    opt.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// la conexióna la bd estádefinidaen appsettings
+
+// Elegir la conexi�n seg�n la variable de entorno DB2USE.
 string? db2Use = Environment.GetEnvironmentVariable("DB2USE");
-// En caso de que el entorno de despliegue producción (Docker)
+
 if (db2Use == "DockerSQLServer")
 {
-    builder.Services.AddDbContext<CatalogContext>(options => {
-        options.UseSqlServer(builder.Configuration
-        .GetConnectionString("SQLServerDockerConnection"),
-        sqlServerOptionsAction: sqlOptions => {
-            //Recuperamos el nombre del Ensamblado donde está la migración
-            sqlOptions.MigrationsAssembly(
-    Assembly.GetExecutingAssembly().GetName().Name);
-            //Configuramos una conexión resiliente a la BD
-            sqlOptions.
-    EnableRetryOnFailure(maxRetryCount: 5,
-    maxRetryDelay: TimeSpan.FromSeconds(30),
-    errorNumbersToAdd: null);
-        });
+    builder.Services.AddDbContext<CatalogContext>(options =>
+    {
+        options.UseSqlServer(
+            builder.Configuration.GetConnectionString(
+                "SQLServerDockerConnection"),
+            sqlOptions =>
+            {
+                sqlOptions.MigrationsAssembly(
+                    Assembly.GetExecutingAssembly().GetName().Name);
+
+                sqlOptions.EnableRetryOnFailure(
+                    maxRetryCount: 5,
+                    maxRetryDelay: TimeSpan.FromSeconds(30),
+                    errorNumbersToAdd: null);
+            });
     });
 }
 else
 {
-    builder.Services.AddDbContext<CatalogContext>(options => options
-    .UseSqlServer(builder.Configuration
-    .GetConnectionString("DefaultConnection")));
+    builder.Services.AddDbContext<CatalogContext>(options =>
+        options.UseSqlServer(
+            builder.Configuration.GetConnectionString(
+                "DefaultConnection")));
 }
 
 
@@ -69,6 +76,14 @@ builder.Services.AddSwaggerGen(
          var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlfile);
 
      });
+
+
+builder.Services.Configure<RabbitOptions>(builder.Configuration.GetSection("RabbitMq"));
+
+builder.Services.Configure<RabbitMqExchange>(builder.Configuration.GetSection("RabbitMqExchange"));
+
+builder.Services.AddSingleton<IEventsPublisher, EventsPublisher>();
+
 
 var app = builder.Build();
 
@@ -104,5 +119,27 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.MapControllers();
+
+try
+{
+
+    //registering the publisher
+    app.Lifetime.ApplicationStarted.Register(() => {
+        var eventsPublisher = app.Services.GetService<IEventsPublisher>();
+        eventsPublisher.Start();
+    });
+    app.Lifetime.ApplicationStopping.Register(() => {
+        var eventsPublisher = app.Services.GetService<IEventsPublisher>();
+        eventsPublisher.Stop();
+    });
+
+}
+catch (Exception ex)
+{
+    var logger = app.Services.GetRequiredService<ILogger<Program>>();
+    logger.LogError(ex, "An error while connecting to RabbitMq.");
+
+}
+
 
 app.Run();
