@@ -22,7 +22,8 @@ namespace Catalog.API.Data
                 .HasColumnType("decimal(5,3)");
 
             builder.Entity<CatalogItem>()
-                .HasAlternateKey(ci => ci.Name);
+                .HasIndex(ci => ci.Name)
+                .IsUnique();
         }
     }
 }
